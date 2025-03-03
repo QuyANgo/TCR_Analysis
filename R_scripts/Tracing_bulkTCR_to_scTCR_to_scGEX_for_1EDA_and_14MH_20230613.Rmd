@@ -1,0 +1,182 @@
+---
+title: "Tracing clonotypes from bulkTCR to scTCR to scGEX for 1EDA & 14MH - 20230613"
+author: "Quy Ai Ngo"
+date: "13-Jun-2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+setwd("/home/localadmin/Desktop/RESEARCH/MArnaud/bulkTCR_scTCR_scGEX/20230613/")
+mainDir <- "/home/localadmin/Desktop/RESEARCH/MArnaud/"
+```
+
+
+```{r load libraries, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+
+library(tidyverse)
+library(stringr)
+library(scales)
+library(ggpubr)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(randomcoloR)
+library(viridis)
+library(rstatix)
+
+library(knitr)
+library(kableExtra)
+library(reactable)
+
+`%nin%` <- Negate(`%in%`)
+
+```
+
+
+```{r Extract T cells from ATATIL object for ACTP, eval=FALSE}
+patientList <- c("1EDA", "14MH")
+```
+
+```{r create df with specific bulk beta chains of 1EDA}
+
+EEPD1 <- c("hTRBV02_CASSDPGYEQYFG_hTRBJ02-7",
+           "hTRBV11-2_CASSPLVASPMVSGANVLTFG_hTRBJ02-6",
+           "hTRBV12-3_CASSVHGSRNTEAFFG_hTRBJ01-1",
+           "hTRBV10-2_CASRDGEKLFFG_hTRBJ01-4",
+           "hTRBV30_CAWSGGQGLSYNEQFFG_hTRBJ02-1",
+           "hTRBV28_CASSSPGDSYNSPLHFG_hTRBJ01-6",
+           "hTRBV10-2_CASRDGDTQYFG_hTRBJ02-3",
+           "hTRBV15_CATRIPAGGHTDTQYFG_hTRBJ02-3",
+           "hTRBV10-2_CATRDGDTQYFG_hTRBJ02-3")
+TP53 <- "hTRBV02_CASSPPGTDTQYFG_hTRBJ02-3"
+PSEN1 <- "hTRBV30_CAWRRGGAYEQYFG_hTRBJ02-7"
+STX17 <- c("hTRBV07-9_CASSLSSGSGLETQYFG_hTRBJ02-5",
+           "hTRBV07-9_CASSLSSGTGIQPQHFG_hTRBJ01-5")
+orphanTR <- c("hTRBV07-9_CASSPYSNQPQHFG_hTRBJ01-5",
+              "hTRBV07-8_CASSATSGGRTDTQYFG_hTRBJ02-3",
+              "hTRBV12-3_CASSLAAGAGQPQHFG_hTRBJ01-5",
+              "hTRBV09_CASSALGGGDRNEQFFG_hTRBJ02-1",
+              "hTRBV24_CATRKRGNTEAFFG_hTRBJ01-1")
+#"hTRBV05-4_CASSLPGGIPGGEQFFG_hTRBJ02-1", # this clone does not exist!!!!
+
+clones1EDA <- data.frame(bulkBeta = c(EEPD1, TP53, PSEN1, STX17, orphanTR))
+
+clones1EDA <- clones1EDA %>%
+  mutate(cloneName = case_when(bulkBeta %in% EEPD1 ~ "EEPD1",
+                               bulkBeta == TP53 ~ "TP53",
+                               bulkBeta == PSEN1 ~ "PSEN1",
+                               bulkBeta %in% STX17 ~ "STX17",
+                               bulkBeta %in% orphanTR ~ "orphan_tumor.reactive"
+                              )
+        ) %>% 
+  separate(bulkBeta, c("B", "CDR3", "J"), sep = "_")
+
+```
+
+
+```{r convert }
+
+# load conversion table
+conversion <- read.table("../Conversion_Bulk_10X_Database_v3.txt", sep = "\t", header = T)
+
+# function to convert bulkTCR names to scTCR names
+#convert.bulk.to.sc <- function(cloneList) {
+  clones1EDA$CDR3 <- gsub("((G$)|(GAG$))", "", clones1EDA$CDR3)
+  clone1EDA <- clones1EDA %>%
+    left_join(conversion, by = c("B" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "scB") %>% 
+    left_join(conversion, by = c("J" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "scJ") %>% 
+    #drop_na() %>% 
+    unite("betaChain", scB, scJ, CDR3, remove = F) %>%
+    select(cloneName, betaChain) #%>%
+    #distinct(Clonotype, .keep_all = F)
+
+  #return(clone)
+#}
+
+#convert.bulk.to.sc(clones1EDA)
+  
+```
+
+
+```{r load scTCR from multiple samples per patient}
+
+name1EDA <- c("T0", "ACTP", "T30", "T64")
+#name14MH <- c("T0", "preREP", "ACTP", "T14", "T30", "BM41")
+
+# Get a list of all files named per patient by sample key words:
+getFiles <- function(sampleList, patient) {
+  filenames <- c()
+  for (f in sampleList) {
+    spl <- list.files(paste0(mainDir, "sc_TCR/", patient, "/TCR/"),
+                      pattern = f, full.names=TRUE)
+    filenames <- c(filenames, spl)
+  }
+  print(filenames)
+  listDF <- lapply(filenames, data.table::fread)
+  return(listDF)
+}
+
+list1EDA <- getFiles(name1EDA, "1EDA")
+#list14MH <- getFiles(name14MH, "14MH")
+
+names(list1EDA) <- name1EDA
+#names(list14MH) <- name14MH
+
+```
+
+# 2. Get all cells from VDJ data
+``` {r get TCR contig annotations from TCR-cellranger results for individual patients}
+
+#allCloneName <- paste(c(EEPD1, TP53, PSEN1, STX17, orphanTR), collapse = "|")
+
+# Fetch all contigs (regardless of chain number)
+TCRcontig <- function(i) {
+  contig <- list1EDA[[i]] %>% 
+    filter(is_cell == "TRUE" & full_length == "TRUE" & productive == "TRUE") %>% 
+    select(barcode, contig_id, chain, cdr3, v_gene, j_gene, raw_clonotype_id) %>% 
+    data.table::setnames("raw_clonotype_id", "Clonotype") %>%
+    unite(col = cdr3_clone, v_gene, j_gene, cdr3) #%>% 
+    #group_by(barcode) %>% filter(n() < 4)
+    
+  chA <- contig %>% filter(chain == "TRA") %>% arrange(barcode, contig_id) 
+  dA <- chA %>% group_by(barcode) %>% dplyr::summarise(chainA = paste0(cdr3_clone, collapse = "; "))
+  chB <- contig %>% filter(chain == "TRB") %>% arrange(barcode, contig_id) 
+  dB <- chB %>% group_by(barcode) %>% dplyr::summarise(chainB = paste0(cdr3_clone, collapse = "; "))
+  dAB <- full_join(dA, dB, by = "barcode")
+
+  uniqContig <- contig %>% distinct(barcode, .keep_all = T) %>%
+    select(barcode, Clonotype) %>%
+    left_join(dAB, by = "barcode") #%>%
+    # separate(chainA, c("TRA_1", "TRA_2"), "; ") %>% 
+    # separate(chainB, c("TRB_1", "TRB_2"), "; ") 
+  write.table(dAB, paste0("1EDA_", i, "_all.cells_with.TCR_20230613.txt"),
+               append = F, quote = F, row.names = F, sep = "\t")
+  
+  sub <- dAB %>% 
+    filter(str_detect(chainB, str_c(clone1EDA$betaChain, collapse = "|"))) %>% 
+    arrange(chainB, chainA)
+  write.table(sub, paste0("1EDA_", i, "_cells_with_matching_bulkBeta_20230613.txt"),
+               append = F, quote = F, row.names = F, sep = "\t")
+  
+  cellCount <- sub %>%
+    #left_join(clone1EDA, by = c("chainB", "betaChain")) %>% 
+    unite("Clonotype", chainB, chainA, sep = "__") %>% 
+    group_by(Clonotype, .drop = F) %>% 
+    summarise(cell_number = n())
+    
+  write.table(cellCount, paste0("1EDA_", i, "_cellCount_for_matching_bulkBeta_20230613.txt"),
+               append = F, quote = F, row.names = F, sep = "\t")
+  
+  rm(chA, chB, dA, dB, contig, dAB, sub); invisible(gc()); gc()
+  return(cellCount)
+}
+
+list1EDAcontig <- lapply(name1EDA, TCRcontig)
+names(list1EDAcontig) <- name1EDA
+
+```
+
+

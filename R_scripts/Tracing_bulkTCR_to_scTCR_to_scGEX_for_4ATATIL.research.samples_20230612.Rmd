@@ -1,0 +1,156 @@
+---
+title: "Tracing clonotypes from bulkTCR to scTCR to scGEX for 4 ATATIL research samples - 20230612"
+author: "Quy Ai Ngo"
+date: "12-Jun-2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+setwd("/home/localadmin/Desktop/RESEARCH/MArnaud/bulkTCR_scTCR_scGEX/20230612/")
+mainDir <- "/home/localadmin/Desktop/RESEARCH/MArnaud/"
+```
+
+
+```{r load libraries, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+
+library(Seurat)
+library(harmony)
+
+library(Matrix)
+library(scater)
+library(scran)
+library(clustree)
+
+library(tidyverse)
+library(stringr)
+library(scales)
+library(ggpubr)
+library(cowplot)
+library(patchwork)
+library(EnhancedVolcano)
+library(RColorBrewer)
+library(randomcoloR)
+library(viridis)
+library(rstatix)
+
+library(knitr)
+library(kableExtra)
+library(reactable)
+
+`%nin%` <- Negate(`%in%`)
+
+```
+
+
+```{r Extract T cells from ATATIL object for ACTP, eval=FALSE}
+
+patientList <- c("0YM1", "058C", "13WU", "16UH")
+
+seu <- readRDS(paste0(mainDir, "DBarras/ATATIL_processed/ATATIL_ACTP_normalized.rds"))
+seu <- DietSeurat(seu)
+seu <- subset(seu, subset = Cell_Type_2 == "T_cells" & Patient %in% patientList)
+unique(seu$Patient)
+
+```
+
+
+```{r load bulkTCR from preREP data}
+
+# Get a list of all files named per patient by sample key words:
+getFiles <- function(patient) {
+  filenames <- c()
+  for (f in c("Conventional", "NeoTIL")) {
+    spl <- list.files(paste0("../bulkTCR_repertoire/", patient, "/preREP/"),
+                      pattern = f, full.names=TRUE)
+    filenames <- c(filenames, spl)
+  }
+  print(filenames)
+  listDF <- lapply(filenames, data.table::fread)
+  listDF <- lapply(listDF, subset, Frame == "IN" & Count > 1)
+  return(listDF)
+}
+
+list0YM1 <- getFiles("0YM1")
+list058C <- getFiles("058C")
+list13WU <- getFiles("13WU")
+list16UH <- getFiles("16UH"); list16UH <- list16UH[1:3]
+
+names(list0YM1) <- c("conventional", "1shot", "2shot")
+names(list058C) <- c("conventional", "1shot", "2shot")
+names(list13WU) <- c("conventional", "1shot", "2shot")
+names(list16UH) <- c("conventional", "1shot", "2shot")
+
+```
+
+
+```{r convert}
+
+# load conversion table
+conversion <- read.table("../Conversion_Bulk_10X_Database_v3.txt", sep = "\t", header = T)
+
+# function to convert bulkTCR names to scTCR names
+extract.bulkOnlyNeo <- function(listPT) {
+  # all conventional beta chains
+  conv <- listPT$conventional %>% select(TRBV, TRBJ, CDR3_aaseq)
+  conv$CDR3_aaseq <- gsub("((G$)|(GAG$))", "", conv$CDR3_aaseq)
+  conv <- conv %>%
+    left_join(conversion, by = c("TRBV" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "B") %>% 
+    left_join(conversion, by = c("TRBJ" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "J") %>% 
+    drop_na() %>% 
+    unite("Clonotype", B, J, CDR3_aaseq, remove = F) %>%
+    select(Clonotype) %>%
+    distinct(Clonotype, .keep_all = F)
+
+  
+  # all 1shot & 2shot NeoTIL beta chains
+  neo <- rbind(listPT$`1shot`, listPT$`2shot`) %>% select(TRBV, TRBJ, CDR3_aaseq)
+  neo$CDR3_aaseq <- gsub("((G$)|(GAG$))", "", neo$CDR3_aaseq)
+  neo <- neo %>%
+    left_join(conversion, by = c("TRBV" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "B") %>% 
+    left_join(conversion, by = c("TRBJ" = "Bulk_sequencing")) %>% 
+    data.table::setnames("Sc_sequencing", "J") %>% 
+    drop_na() %>% 
+    unite("Clonotype", B, J, CDR3_aaseq, remove = F) %>%
+    select(Clonotype) %>%
+    distinct(Clonotype, .keep_all = F)  
+  
+  # beta chains in only NeoTIL
+  NEO <- neo %>% filter(Clonotype %nin% conv$Clonotype)
+
+  return(NEO)
+}
+
+neo0YM1 <- extract.bulkOnlyNeo(list0YM1)
+neo058C <- extract.bulkOnlyNeo(list058C)
+neo13WU <- extract.bulkOnlyNeo(list13WU)
+neo16UH <- extract.bulkOnlyNeo(list16UH)
+
+```
+
+
+
+```{r extract cells with matching beta-scTCR from patient}
+
+extract.scBeta <- function(neoBulk, patient) {
+  pt <- FetchData(seu, vars = c("Patient", "TRB_1", "TRB_2", "TRA_1", "TRA_2")) %>% filter(Patient == patient) %>% 
+  select(-Patient) %>% 
+  filter(TRB_1 %in% neoBulk$Clonotype | TRB_2 %in% neoBulk$Clonotype) %>% 
+  arrange(TRB_1, TRA_1, TRA_2) %>% 
+  replace(is.na(.), "") %>% 
+  unite("Clonotype", 1:4, sep = "__") %>% 
+  group_by(Clonotype) %>% 
+  summarise(cell_number = n())
+
+write.table(pt, paste0(patient, "_cellCounts_per_clonotype_in_sc.T0_from_bulk.preREP_present_only_in_NeoTIL_20230612.txt"),
+                           sep = "\t", quote = F, row.names = F, col.names = T)
+}
+
+#extract.scBeta(NEO, "0YM1")
+mapply(extract.scBeta, list(neo0YM1, neo058C, neo13WU, neo16UH), patientList)
+
+```
+
