@@ -1,0 +1,887 @@
+---
+title: "All patients - alluvial plot for clonetype evolution from 5 timepoints of bulkTCR - 20220718"
+author: "Quy Ai Ngo"
+date: "18-Jul-2022"
+output: slides_presentation
+---
+
+```{r setup, echo = FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+setwd("/home/localadmin/Desktop/RESEARCH/MArnaud/bulk_TCR/All_patients/20220718_cloneEvolution/")
+```
+
+## 1. Load libraries
+```{r load libraries}
+
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(ggalluvial)
+library(randomcoloR)
+library(ggforce)
+library(scales)
+library(grid)
+library(ggpubr)
+library(cowplot)
+#library(kableExtra)
+
+```
+
+
+```{r patient & sample info}
+
+# patients <- c("14MH", "13LN", "13P4", "1IJX", "1EDA", "1HU3", "0ZMN", "1I3M", "1FUI", "1IKA")
+sample.5f <- c("B0", "T0", "ACTP", "B30", "T30") # for patient1,2,7a,6comb-
+patient1 <- "14MH"
+patient2 <- "13P4"
+patient7 <- "13LN" #(patient7a = "13LN.ATATIL")
+
+sample.6fT0 <- c("B0", "T0.A", "T0.B", "ACTP", "B30","T30") # for patient4,5
+patient4 <- "1EDA"
+patient5 <- "1HU3"
+
+sample.6fT30 <- c("B0", "T0", "ACTP", "B30", "T30.A", "T30.B") # for patient3,9,7b
+patient3 <- "1IJX"
+patient9 <- "1FUI"
+patient7 <- "13LN" #(patient7b = "13LN.NeoTIL")
+
+
+sample.7fT0T30 <- c("B0", "T0.A", "T0.B", "ACTP", "B30", "T30.A", "T30.B") # for patient6
+patient6 <- "0ZMN"
+
+# patient8 <- "1I3M"
+# patient10 <- "1IKA"
+
+
+```
+
+
+# 1. Load data
+```{r data import & cleaning}
+
+mainDir <- "/home/localadmin/Desktop/RESEARCH/MArnaud/bulk_TCR/"
+
+# Get a list of all files named per patient by sample key words:
+# Get a list of all files named per patient by sample key words:
+getFiles <- function(patient) {
+  filenames <- list.files(paste0(mainDir, patient, "/TCR_repertoire/"),
+                            pattern = "B0|T0|ACTP|B30|T30", full.names=TRUE)
+  print(filenames)
+  listDF <- lapply(filenames, data.table::fread)
+  listDF <- lapply(listDF, subset, Frame == "IN" & Count > 1)
+  return(listDF)
+}
+
+listDF1 <- getFiles(patient1)
+listDF2 <- getFiles(patient2)
+listDF1 <- listDF1[c(3,5,2,4,1)]
+listDF2 <- listDF2[c(3,2,1,4,5)]
+names(listDF1) <- sample.5f
+names(listDF2) <- sample.5f
+
+listDF4 <- getFiles(patient4)
+listDF5 <- getFiles(patient5)
+listDF4 <- listDF4[c(2,5,6,1,3,4)]
+listDF5 <- listDF5[c(2,5,6,1,3,4)]
+names(listDF4) <- sample.6fT0
+names(listDF5) <- sample.6fT0
+
+listDF3 <- getFiles(patient3)
+listDF9 <- getFiles(patient9)
+listDF3 <- listDF3[c(3,2,1,4,5,6)]
+listDF9 <- listDF9[c(3,2,1,4,5,6)]
+names(listDF3) <- sample.6fT30
+names(listDF9) <- sample.6fT30
+
+listDF6 <- getFiles(patient6)
+listDF6 <- listDF6[c(2,4,5,1,3,6,7)]
+names(listDF6) <- sample.7fT0T30
+
+
+# for patient7a (5 samples):
+  filenames7a <- list.files(paste0(mainDir, patient7, "/TCR_repertoire/ATATIL"),
+                            pattern = "B0|T0|ACTP|B30|T30", full.names=TRUE)
+  print(filenames7a)
+  listDF7a <- lapply(filenames7a, data.table::fread)
+  listDF7a <- lapply(listDF7a, subset, Frame == "IN" & Count > 1)
+  listDF7a <- listDF7a[c(2,4,1,3,5)]
+names(listDF7a) <- sample.5f
+
+# for patient7b (6 samples):
+  filenames7b <- list.files(paste0(mainDir, patient7, "/TCR_repertoire/NeoTIL"),
+                            pattern = "B0|T0|ACTP|B30|T30", full.names=TRUE)
+  print(filenames7b)
+  listDF7b <- lapply(filenames7b, data.table::fread)
+  listDF7b <- lapply(listDF7b, subset, Frame == "IN" & Count > 1)
+  listDF7b <- listDF7b[c(4,3,1,2,5,6)]
+names(listDF7b) <- sample.6fT30
+
+```
+
+
+# 2. Clean up & prepare data for alluvia
+```{r prepare list of df for ggalluvial}
+
+# 1. add "Clonotype" column to each df of the list.DF by combining TRBV, CDR3_aaseq and TRBJ
+# 2. add "Status" column ("present" & "absent") to each df, according to the read counts
+# 3. add "Freq" column to each df for clone Frequency in each sample
+# 4. select 4 columns Clonotype, Count, Freq, Status
+# 5. Reorder list.DF & rename files in list
+
+prep_df_alv <- function(spl, ...){
+  spl <- spl %>%
+    unite("Clonotype", c(TRBV, CDR3_aaseq, TRBJ), remove = F) %>% #1
+    mutate(Status = ifelse(Count > 1, "P", "A")) %>% #2
+    mutate(Freq = 100*(round(Count / sum(Count), 10))) %>% #3, round up decimal to 10 digits
+    select(Clonotype, Count, Freq, Status) #4
+}
+
+listDF1 <- lapply(listDF1, prep_df_alv) #1,2,3,4
+listDF2 <- lapply(listDF2, prep_df_alv)
+listDF7a <- lapply(listDF7a, prep_df_alv)
+
+listDF4 <- lapply(listDF4, prep_df_alv)
+listDF5 <- lapply(listDF5, prep_df_alv)
+
+listDF3 <- lapply(listDF3, prep_df_alv)
+listDF9 <- lapply(listDF9, prep_df_alv)
+listDF7b <- lapply(listDF7b, prep_df_alv)
+
+listDF6 <- lapply(listDF6, prep_df_alv)
+
+# listDF8 <- lapply(listDF8, prep_df_alv)
+
+# listDF10 <- lapply(listDF10, prep_df_alv)
+
+```
+
+
+```{r create sample suffixes for joined df of patient with even-number of samples}
+sfx.5f <- c("_B0", "_T0", "_ACTP", "_B30", "_T30") # for patient1,2,7a
+sfx.6fT0 <- c("_B0", "_T0.A", "_T0.B", "_ACTP", "_B30", "_T30") # for patient4,5
+sfx.6fT30 <- c("_B0", "_T0", "_ACTP", "_B30", "_T30.A", "_T30.B") # for patient3,9,7b
+sfx.7fT0T30 <- c("_B0", "_T0.A", "_T0.B", "_ACTP", "_B30", "_T30.A", "_T30.B") # for patient6
+```
+
+
+```{r join all df in the list.DF into 1 big df of TCR repertoire with 2 statuses, clone Frequency}
+
+# 6. avoid automatic dplyr column renaming when joining all df
+# 7. convert Status: NA into "A"
+# 8. convert Freq: NA into artificial 0
+# 9. select relevant columns
+# 10. add Status combinations for each clone
+
+# Join 5 samples :
+joinDF.5f <- function(listDF) {
+  res <- listDF[[1]]
+  for(i in seq(1, (length(listDF) - 1), by = 1)) {
+    res <- merge(res, listDF[[i+1]], all = TRUE,
+                 suffixes = sfx.5f[i:(i+1)], by = "Clonotype") 
+  }
+  data.table::setnames(res, old = c("Count", "Freq", "Status"), new = c("Count_T30", "Freq_T30", "Status_T30")) #6
+  return(res)
+}
+res1 <- joinDF.5f(listDF1)
+res2 <- joinDF.5f(listDF2)
+res7a <- joinDF.5f(listDF7a)
+
+
+# Join even-number samples:
+joinDF.even <- function(listDF, sfx) {
+  res <- listDF[[1]]
+  for(i in seq(1, (length(listDF) - 1), by = 1)) {
+    res <- merge(res, listDF[[i+1]], all = TRUE,
+                 suffixes = sfx[i:(i+1)], by = "Clonotype")
+  } #6
+  return(res)
+}
+res4 <- joinDF.even(listDF4, sfx.6fT0)
+res5 <- joinDF.even(listDF5, sfx.6fT0)
+
+res3 <- joinDF.even(listDF3, sfx.6fT30)
+res9 <- joinDF.even(listDF9, sfx.6fT30)
+res7b <- joinDF.even(listDF7b, sfx.6fT30)
+
+
+# Join 7 samples :
+joinDF.7f <- function(listDF) {
+  res <- listDF[[1]]
+  for(i in seq(1, (length(listDF) - 1), by = 1)) {
+    res <- merge(res, listDF[[i+1]], all = TRUE,
+                 suffixes = sfx.7fT0T30[i:(i+1)], by = "Clonotype") 
+  }
+  data.table::setnames(res, old = c("Count", "Freq", "Status"), new = c("Count_T30.B", "Freq_T30.B", "Status_T30.B")) #6
+  return(res)
+}
+res6 <- joinDF.7f(listDF6)
+
+# res10 <- joinDF.3F(listDF10)
+# res8 <- joinDF.4Fc(listDF8)
+```
+
+
+```{r add dummy frequency & clone status}
+
+# Add dummy frequency for all patients:
+addFreqStatus <- function(res) {
+  res <- res %>%
+  mutate(across(starts_with("Status"), ~ifelse(is.na(.x),"A",.x))) %>% #7
+  mutate(across(starts_with("Freq"), 
+                ~ifelse(is.na(.x), (round(0/100,10)), .x))) %>% #8 dummy values used for calculation of 0-read clones
+  select(Clonotype, starts_with("Freq"), starts_with("Status")) #9
+}
+
+res1 <- addFreqStatus(res1)
+res2 <- addFreqStatus(res2)
+res7a <- addFreqStatus(res7a)
+
+res4 <- addFreqStatus(res4)
+res5 <- addFreqStatus(res5)
+
+res3 <- addFreqStatus(res3)
+res9 <- addFreqStatus(res9)
+res7b <- addFreqStatus(res7b)
+
+res6 <- addFreqStatus(res6)
+
+# res8 <- addFreqStatus(res8)
+# res10 <- addFreqStatus(res10)
+
+# Add cloneID as clone status combination - 5 samples:
+addCloneID.5f <- function(res) {
+  res <- mutate(res, cloneID = paste(res$Status_B0, res$Status_T0, res$Status_ACTP, res$Status_B30, res$Status_T30, sep="_")) #10
+}
+res1 <- addCloneID.5f(res1)
+res2 <- addCloneID.5f(res2)
+res7a <- addCloneID.5f(res7a)
+
+
+# Add cloneID as clone status combination - 6 samples (2 T0):
+addCloneID.6fT0 <- function(res) {
+  res <- res %>% mutate(cloneID = paste(Status_B0, Status_T0.A, Status_T0.B, Status_ACTP, res$Status_B30, res$Status_T30, sep="_")) #10
+}
+res4 <- addCloneID.6fT0(res4)
+res5 <- addCloneID.6fT0(res5)
+
+
+# Add cloneID as clone status combination - 6 samples (2 T30):
+addCloneID.6fT30 <- function(res) {
+  res <- res %>% mutate(cloneID = paste(Status_B0, Status_T0, Status_ACTP, res$Status_B30, res$Status_T30.A, res$Status_T30.B, sep="_")) #10
+}
+res3 <- addCloneID.6fT30(res3)
+res9 <- addCloneID.6fT30(res9)
+res7b <- addCloneID.6fT30(res7b)
+
+
+# Add cloneID as clone status combination - 7 samples (2 T0 & 2 T30):
+addCloneID.7fT0T30 <- function(res) {
+  res <- res %>% mutate(cloneID = paste(Status_B0, Status_T0.A, Status_T0.B, Status_ACTP, res$Status_B30, res$Status_T30.A, res$Status_T30.B, sep="_")) #10
+}
+res6 <- addCloneID.7fT0T30(res6)
+
+
+```
+
+
+```{r prepare alv format}
+
+# Summarize 5 samples:
+summarise.5f <- function(res) {
+  res <- res %>% 
+  group_by(cloneID) %>%
+  summarise(Freq_B0 = sum(Freq_B0),
+            Freq_T0 = sum(Freq_T0),
+            Freq_ACTP = sum(Freq_ACTP),
+            Freq_B30 = sum(Freq_B30),
+            Freq_T30 = sum(Freq_T30)
+           ) %>% 
+  arrange(cloneID)
+  names(res) <- sub("Freq_*", "", names(res))
+  return(res)
+}
+res1 <- summarise.5f(res1)
+res2 <- summarise.5f(res2)
+res7a <- summarise.5f(res7a)
+
+
+# Summarize 6 samples (2 T0):
+summarise.6fT0 <- function(res) {
+  res <- res %>%
+  group_by(cloneID) %>%
+  summarise(Freq_B0 = sum(Freq_B0),
+            Freq_T0.A = sum(Freq_T0.A),
+            Freq_T0.B = sum(Freq_T0.B),
+            Freq_ACTP = sum(Freq_ACTP),
+            Freq_B30 = sum(Freq_B30),
+            Freq_T30 = sum(Freq_T30),
+           ) %>%
+  arrange(cloneID)
+  names(res) <- sub("Freq_*", "", names(res))
+  return(res)
+}
+res4 <- summarise.6fT0(res4)
+res5 <- summarise.6fT0(res5)
+
+
+# Summarize 6 samples (2 T30):
+summarise.6fT30 <- function(res) {
+  res <- res %>%
+  group_by(cloneID) %>%
+  summarise(Freq_B0 = sum(Freq_B0),
+            Freq_T0 = sum(Freq_T0),
+            Freq_ACTP = sum(Freq_ACTP),
+            Freq_B30 = sum(Freq_B30),
+            Freq_T30.A = sum(Freq_T30.A),
+            Freq_T30.B = sum(Freq_T30.B)
+           ) %>%
+  arrange(cloneID)
+  names(res) <- sub("Freq_*", "", names(res))
+  return(res)
+}
+res3 <- summarise.6fT30(res3)
+res9 <- summarise.6fT30(res9)
+res7b <- summarise.6fT30(res7b)
+
+
+# Summarize 7 samples (2 T0 & 2 T30):
+summarise.7fT0T30 <- function(res) {
+  res <- res %>%
+  group_by(cloneID) %>%
+  summarise(Freq_B0 = sum(Freq_B0),
+            Freq_T0.A = sum(Freq_T0.A),
+            Freq_T0.B = sum(Freq_T0.B),
+            Freq_ACTP = sum(Freq_ACTP),
+            Freq_B30 = sum(Freq_B30),
+            Freq_T30.A = sum(Freq_T30.A),
+            Freq_T30.B = sum(Freq_T30.B)
+           ) %>%
+  arrange(cloneID)
+  names(res) <- sub("Freq_*", "", names(res))
+  return(res)
+}
+res6 <- summarise.7fT0T30(res6)
+
+
+```
+
+
+```{r transform alv to long format}
+
+# Convert res to long alv format:
+toAlv <- function(res) {
+  alv <- res %>%
+  gather(key = Sample, value = Freq, 
+         2:length(res), 
+         factor_key = TRUE) %>% 
+  mutate(Status = ifelse(Freq > 0, "present", "absent"))
+  is_alluvia_form(alv, 2:length(alv))
+  return(alv)
+}
+
+alv1 <- toAlv(res1)
+alv2 <- toAlv(res2)
+
+alv4 <- toAlv(res4)
+alv5 <- toAlv(res5)
+
+alv3 <- toAlv(res3)
+alv9 <- toAlv(res9)
+alv7b <- toAlv(res7b)
+
+alv7a <- toAlv(res7a)
+
+alv6 <- toAlv(res6)
+
+# alv8 <- toAlv(res8)
+# alv10 <- toAlv(res10)
+
+# Sanity check for max freq per sample:
+alv1 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+alv2 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+alv7a %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+
+alv4 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+alv5 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+
+alv3 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+alv9 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+alv7b %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+
+alv6 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+
+# alv8 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+# alv10 %>% group_by(Sample) %>%  summarise(freq = sum(Freq))
+
+```
+
+
+```{r finish alv df}
+
+## cloneOri categories defined below is the same for all patients:
+cloneOri <- c("BT.ori_B.persist_T.infiltr",  "T.ori_B.persist_T.infiltr",
+              "B.ori_B.persist_T.infiltr", "NA.ori_B.persist_T.infiltr",
+              "BT.ori_B.persist_T.noninfiltr", "T.ori_B.persist_T.noninfiltr", 
+              "BT.ori_B.nonpersist_T.infiltr", "T.ori_B.nonpersist_T.infiltr",
+              "BT.ori_B.nonpersist_T.noninfiltr", "T.ori_B.nonpersist_T.noninfiltr",
+              "others") #alluvium color categories
+
+# Add clone origin - 5 samples:
+addCloneOri.5f <- function(alv) {
+  alv <- alv %>% 
+    mutate(cloneOri = ifelse(cloneID == "P_P_P_P_P", "BT.ori_B.persist_T.infiltr", #"light red",
+                      ifelse(cloneID == "A_P_P_P_P", "T.ori_B.persist_T.infiltr", #"dark red",
+                      ifelse(cloneID == "P_A_P_P_P", "B.ori_B.persist_T.infiltr", #"light green",
+                      ifelse(cloneID == "A_A_P_P_P", "NA.ori_B.persist_T.infiltr", #"dark green",
+                      ifelse(cloneID == "P_P_P_P_A", "BT.ori_B.persist_T.noninfiltr", #"light orange",
+                      ifelse(cloneID == "A_P_P_P_A", "T.ori_B.persist_T.noninfiltr", #"brown", 
+                      ifelse(cloneID == "P_P_P_A_P", "BT.ori_B.nonpersist_T.infiltr", #"light purple",
+                      ifelse(cloneID == "A_P_P_A_P", "T.ori_B.nonpersist_T.infiltr", #"dark purple",
+                      ifelse(cloneID == "P_P_P_A_A", "BT.ori_B.nonpersist_T.noninfiltr", #"light blue",
+                      ifelse(cloneID == "A_P_P_A_A", "T.ori_B.nonpersist_T.noninfiltr", #"teal",
+                      "others" #"grey")
+                      ))))))))))) #alluvium legend
+  alv$cloneOri <- factor(alv$cloneOri, levels = cloneOri) #alluvium color categories
+  return(alv)
+}
+alv1 <- addCloneOri.5f(alv1)
+alv2 <- addCloneOri.5f(alv2)
+alv7a <- addCloneOri.5f(alv7a)
+
+
+# Add clone origin - 6 samples (2 T0):
+addCloneOri.6fT0 <- function(alv) {
+  alv <- alv %>% 
+    mutate(cloneOri = ifelse(cloneID == "P_P_P_P_P_P" | cloneID == "P_P_A_P_P_P" | cloneID == "P_A_P_P_P_P", "BT.ori_B.persist_T.infiltr", #"light red",
+                      ifelse(cloneID == "A_P_P_P_P_P" | cloneID == "A_P_A_P_P_P" | cloneID == "A_A_P_P_P_P", "T.ori_B.persist_T.infiltr", #"dark red",
+                      ifelse(cloneID == "P_A_A_P_P_P", "B.ori_B.persist_T.infiltr", #"light green",
+                      ifelse(cloneID == "A_A_A_P_P_P", "NA.ori_B.persist_T.infiltr", #"dark green",
+                      ifelse(cloneID == "P_P_P_P_P_A" | cloneID == "P_P_A_P_P_A" | cloneID == "P_A_P_P_P_A", "BT.ori_B.persist_T.noninfiltr", #"light orange",
+                      ifelse(cloneID == "A_P_P_P_P_A" | cloneID == "A_P_A_P_P_A" | cloneID == "A_A_P_P_P_A", "T.ori_B.persist_T.noninfiltr", #"brown", 
+                      ifelse(cloneID == "P_P_P_P_A_P" | cloneID == "P_P_A_P_A_P" | cloneID == "P_A_P_P_A_P", "BT.ori_B.nonpersist_T.infiltr", #"light purple",
+                      ifelse(cloneID == "A_P_P_P_A_P" | cloneID == "A_P_A_P_A_P" | cloneID == "A_A_P_P_A_P", "T.ori_B.nonpersist_T.infiltr", #"dark purple",
+                      ifelse(cloneID == "P_P_P_P_A_A" | cloneID == "P_P_A_P_A_A" | cloneID == "P_A_P_P_A_A", "BT.ori_B.nonpersist_T.noninfiltr", #"light blue",
+                      ifelse(cloneID == "A_P_P_P_A_A" | cloneID == "A_P_A_P_A_A" | cloneID == "A_A_P_P_A_A", "T.ori_B.nonpersist_T.noninfiltr", #"teal",
+                      "others" #"grey")
+                      ))))))))))) #alluvium legend
+  alv$cloneOri <- factor(alv$cloneOri, levels = cloneOri) #alluvium color categories
+  return(alv)
+}
+alv4 <- addCloneOri.6fT0(alv4)
+alv5 <- addCloneOri.6fT0(alv5)
+
+
+# Add clone origin - 6 samples (2 T30):
+addCloneOri.6fT30 <- function(alv) {
+  alv <- alv %>% 
+    mutate(cloneOri = ifelse(cloneID == "P_P_P_P_P_P" | cloneID == "P_P_P_P_P_A" | cloneID == "P_P_P_P_A_P", "BT.ori_B.persist_T.infiltr", #"light red",
+                      ifelse(cloneID == "A_P_P_P_P_P" | cloneID == "A_P_P_P_P_A" | cloneID == "A_P_P_P_A_P", "T.ori_B.persist_T.infiltr", #"dark red",
+                      ifelse(cloneID == "P_A_P_P_P_P" | cloneID == "P_A_P_P_P_A" | cloneID == "P_A_P_P_A_P", "B.ori_B.persist_T.infiltr", #"light green",
+                      ifelse(cloneID == "A_A_P_P_P_P" | cloneID == "A_A_P_P_P_A" | cloneID == "A_A_P_P_A_P", "NA.ori_B.persist_T.infiltr", #"dark green",
+                      ifelse(cloneID == "P_P_P_P_A_A", "BT.ori_B.persist_T.noninfiltr", #"light orange",
+                      ifelse(cloneID == "A_P_P_P_A_A" | cloneID == "A_P_P_P_A_A" | cloneID == "A_P_P_P_A_A", "T.ori_B.persist_T.noninfiltr", #"brown", 
+                      ifelse(cloneID == "P_P_P_A_P_P" | cloneID == "P_P_P_A_P_A" | cloneID == "P_P_P_A_A_P", "BT.ori_B.nonpersist_T.infiltr", #"light purple",
+                      ifelse(cloneID == "A_P_P_A_P_P" | cloneID == "A_P_P_A_P_A" | cloneID == "A_P_P_A_A_P", "T.ori_B.nonpersist_T.infiltr", #"dark purple",
+                      ifelse(cloneID == "P_P_P_A_A_A", "BT.ori_B.nonpersist_T.noninfiltr", #"light blue",
+                      ifelse(cloneID == "A_P_P_A_A_A", "T.ori_B.nonpersist_T.noninfiltr", #"teal",
+                      "others" #"grey")
+                      ))))))))))) #alluvium legend
+  alv$cloneOri <- factor(alv$cloneOri, levels = cloneOri) #alluvium color categories
+  return(alv)
+}
+alv3 <- addCloneOri.6fT30(alv3)
+alv9 <- addCloneOri.6fT30(alv9)
+alv7b <- addCloneOri.6fT30(alv7b)
+
+
+# Add clone origin - 7 samples (2 T0 & 2 T30):
+addCloneOri.7fT0T30 <- function(alv) {
+  alv <- alv %>% 
+    mutate(cloneOri = ifelse(cloneID == "P_P_P_P_P_P_P" | 
+                             cloneID == "P_P_A_P_P_P_P" | cloneID == "P_A_P_P_P_P_P" | cloneID == "P_P_P_P_P_P_A" | cloneID == "P_P_P_P_P_A_P" |
+                             cloneID == "P_P_A_P_P_P_A" | cloneID == "P_P_A_P_P_A_P" | cloneID == "P_A_P_P_P_A_P" | cloneID == "P_A_P_P_P_P_A",
+                             "BT.ori_B.persist_T.infiltr", #"light red",
+                             
+                      ifelse(cloneID == "A_P_P_P_P_P_P" | cloneID == "A_P_P_P_P_P_A" | cloneID == "A_P_P_P_P_A_P" |
+                             cloneID == "A_P_A_P_P_P_P" | cloneID == "A_P_A_P_P_P_A" | cloneID == "A_P_A_P_P_A_P" | 
+                             cloneID == "A_A_P_P_P_P_P" | cloneID == "A_A_P_P_P_P_A" | cloneID == "A_A_P_P_P_A_P", 
+                             "T.ori_B.persist_T.infiltr", #"dark red",
+                             
+                      ifelse(cloneID == "P_A_A_P_P_P_P" | cloneID == "P_A_A_P_P_P_A" | cloneID == "P_A_A_P_P_A_P", 
+                             "B.ori_B.persist_T.infiltr", #"light green",
+                             
+                      ifelse(cloneID == "A_A_A_P_P_P_P" | cloneID == "A_A_A_P_P_P_A" | cloneID == "A_A_A_P_P_A_P", 
+                             "NA.ori_B.persist_T.infiltr", #"dark green",
+                             
+                      ifelse(cloneID == "P_P_P_P_P_A_A" | cloneID == "P_P_A_P_P_A_A" | cloneID == "P_A_P_P_P_A_A",
+                             "BT.ori_B.persist_T.noninfiltr", #"light orange",
+                             
+                      ifelse(cloneID == "A_P_P_P_P_A_A" | cloneID == "A_P_A_P_P_A_A" | cloneID == "A_A_P_P_P_A_A", 
+                             "T.ori_B.persist_T.noninfiltr", #"brown", 
+                             
+                             
+                      ifelse(cloneID == "P_P_P_P_A_P_P" | cloneID == "P_P_P_P_A_P_A" | cloneID == "P_P_P_P_A_A_P" |
+                             cloneID == "P_P_A_P_A_P_P" | cloneID == "P_P_A_P_A_P_A" | cloneID == "P_P_A_P_A_A_P" |
+                             cloneID == "P_A_P_P_A_P_P" | cloneID == "P_A_P_P_A_P_A" | cloneID == "P_A_P_P_A_A_P", 
+                             "BT.ori_B.nonpersist_T.infiltr", #"light purple",
+                             
+                      ifelse(cloneID == "A_P_P_P_A_P_P" | cloneID == "A_P_P_P_A_P_A" | cloneID == "A_P_P_P_A_A_P" |
+                             cloneID == "A_P_A_P_A_P_P" | cloneID == "A_A_P_P_A_P_P" | 
+                             cloneID == "A_P_A_P_A_P_A" | cloneID == "A_A_P_P_A_A_P" | cloneID == "A_P_A_P_A_A_P" | cloneID == "A_A_P_P_A_P_A", 
+                             "T.ori_B.nonpersist_T.infiltr", #"dark purple",
+                             
+                      ifelse(cloneID == "P_P_P_P_A_A_A" | cloneID == "P_P_A_P_A_A_A" | cloneID == "P_A_P_P_A_A_A", 
+                             "BT.ori_B.nonpersist_T.noninfiltr", #"light blue",
+                             
+                      ifelse(cloneID == "A_P_P_P_A_A_A" | cloneID == "A_P_A_P_A_A_A" | cloneID == "A_A_P_P_A_A_A", 
+                             "T.ori_B.nonpersist_T.noninfiltr", #"teal",
+                             
+                      "others" #"grey")
+                      ))))))))))) #alluvium legend
+  alv$cloneOri <- factor(alv$cloneOri, levels = cloneOri) #alluvium color categories
+  return(alv)
+}
+alv6 <- addCloneOri.7fT0T30(alv6)
+
+# alv10 <- addCloneOri.3F(alv10)
+
+
+
+# Factorize Sample for all patients:
+alv1$Sample <- factor(alv1$Sample, levels = sample.5f) #axis
+alv2$Sample <- factor(alv2$Sample, levels = sample.5f)
+alv7a$Sample <- factor(alv7a$Sample, levels = sample.5f)
+
+alv4$Sample <- factor(alv4$Sample, levels = sample.6fT0)
+alv5$Sample <- factor(alv5$Sample, levels = sample.6fT0)
+
+alv3$Sample <- factor(alv3$Sample, levels = sample.6fT30)
+alv9$Sample <- factor(alv9$Sample, levels = sample.6fT30)
+alv7b$Sample <- factor(alv7b$Sample, levels = sample.6fT30)
+
+alv6$Sample <- factor(alv6$Sample, levels = sample.7fT0T30)
+
+# alv8$Sample <- factor(alv8$Sample, levels = sample.4Fc)
+# alv10$Sample <- factor(alv10$Sample, levels = sample.3F)
+
+# Factorize other variables for all patients:
+factorizeOthers <- function(alv) {
+  alv$cloneID <- factor(alv$cloneID, levels = unique(alv$cloneID)) #alluvium
+  alv$Status <- factor(alv$Status, levels = c("present", "absent")) #stratum
+  alv$stratum_text <- as.character(alv$Status) #stratum_text
+  return(alv)
+}
+
+alv1 <- factorizeOthers(alv1)
+alv2 <- factorizeOthers(alv2)
+alv7a <- factorizeOthers(alv7a)
+
+alv4 <- factorizeOthers(alv4)
+alv5 <- factorizeOthers(alv5)
+
+alv3 <- factorizeOthers(alv3)
+alv9 <- factorizeOthers(alv9)
+alv7b <- factorizeOthers(alv7b)
+
+alv6 <- factorizeOthers(alv6)
+
+# alv8 <- factorizeOthers(alv8)
+# alv10 <- factorizeOthers(alv10)
+
+# Save alv df of all patients:
+saveAlv <- function(alv, patient) {
+  write.table(alv, paste0(patient, ".bulkTCR_frequency.status_of_clone.origins_from.5.timepoints_for_alluvial.plot_20220718.txt"),
+            sep = "\t", append = F, quote = F, row.names = F, col.names = T)
+}
+saveAlv(alv1, patient1)
+saveAlv(alv2, patient2)
+
+# for patient7a:
+  write.table(alv7a, paste0(patient7, ".ATATIL.bulkTCR_frequency.status_of_clone.origins_from.5.timepoints_for_alluvial.plot_20220718.txt"),
+            sep = "\t", append = F, quote = F, row.names = F, col.names = T)
+  
+# for patient7b:
+  write.table(alv7b, paste0(patient7, ".NeoTIL.bulkTCR_frequency.status_of_clone.origins_from.5.timepoints_for_alluvial.plot_20220718.txt"),
+            sep = "\t", append = F, quote = F, row.names = F, col.names = T)  
+  
+saveAlv(alv4, patient4)
+saveAlv(alv5, patient5)
+
+saveAlv(alv3, patient3)
+saveAlv(alv9, patient9)
+
+saveAlv(alv6, patient6)
+
+# saveAlv(alv8, patient8)
+# saveAlv(alv10, patient10)
+
+```
+
+
+# 3. Plot
+```{r prepare artificial scale for "absent" stratum}
+
+#fraction_missing1 <- 15 # Quy's 1read.Scheme
+fraction_missing <- 25
+
+addAbsentFreq <- function(sampleList, alv) {
+  for (spl in sampleList){
+  mask_missing <- (alv$Sample == spl) & (alv$Status == "absent")
+  alv[mask_missing, ]$Freq <- fraction_missing/sum(mask_missing)
+  }
+  return((alv))
+}
+
+alv1 <- addAbsentFreq(sample.5f, alv1)
+alv2 <- addAbsentFreq(sample.5f, alv2)
+alv7a <- addAbsentFreq(sample.5f, alv7a)
+
+alv4 <- addAbsentFreq(sample.6fT0, alv4)
+alv5 <- addAbsentFreq(sample.6fT0, alv5)
+
+alv3 <- addAbsentFreq(sample.6fT30, alv3)
+alv9 <- addAbsentFreq(sample.6fT30, alv9)
+alv7b <- addAbsentFreq(sample.6fT30, alv7b)
+
+alv6 <- addAbsentFreq(sample.7fT0T30, alv6)
+
+
+# Sanity check for total frequency, including absent frequency, per sample:
+alv1 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+alv2 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+alv7a %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+alv4 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+alv5 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+alv3 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+alv9 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+alv7b %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+alv6 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+# alv7 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+# alv8 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+# alv10 %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+```
+
+
+```{r set axis labels, legend title & breaks}
+
+# Get new y axis breaks and labels for true scale of "present" stratum :
+new_y_breaks <- seq(from = fraction_missing, to = (100 + fraction_missing), by = 25)
+new_y_labels <- seq(from = 0, to = 100, by = 25)
+
+box_width <- 1/10
+legend_title <- "clone type"
+#legend_breaks <- levels(alv$cloneID)
+```
+
+
+
+```{r generate distinct colors for each alluvium and stratum}
+
+# color_map_alv <- c("#FF6666", "#CC0000", "#CCFF99", "#339900", "#FFCC00", "#FF9933", "#9999FF", "#6600CC", "#66CCFF",  "#0000FF", "grey80") #Remy's color, old schemeB !!!\
+
+color_map_alv <- c("lightcoral", "firebrick3", "darkseagreen3", "chartreuse4", "darkgoldenrod1", "darkgoldenrod3", "mediumpurple1", "mediumpurple4", "lightblue1", "darkcyan", "grey85")
+
+names(color_map_alv) <- cloneOri
+
+color_map_stratum <- c("snow3", "snow3")
+names(color_map_stratum) <- c("present", "absent")
+
+color_map <- c(color_map_alv, color_map_stratum)
+
+alpha_map <- replicate(0.80, n = length(color_map))
+names(alpha_map) <- names(color_map)
+alpha_map[["absent"]] <- 1
+alpha_map[["present"]] <- 1
+
+```
+
+
+
+```{r alluvial plot - artificial absence scale, fig.width=11, fig.height=6.5}
+
+plotAlv <- function(alv, patient) {
+  #legend_labels = alv$legend
+  
+  plt <- ggplot(alv,
+                aes(x = Sample, y = Freq, 
+                    stratum = Status, alluvium = cloneID)) +
+  # set the geom flow and stratum
+    geom_flow(aes(fill = cloneOri, alpha = cloneOri),
+              na.rm = F, 
+              #colour = "white", # --> include for Rémy oldScheme2 !!!
+              aes.bind = "flows", width = 1/32) +
+    geom_stratum(aes(fill = Status), 
+                 na.rm = F, width = 1/8) +
+  # set the text:
+    geom_text(aes(label = stratum_text), stat = "stratum", size = 3.5, angle = 90) +
+  # set the x and y axis
+    scale_x_discrete(limits = levels(alv$Sample), expand = c(0,0)) +
+    scale_y_continuous(breaks = new_y_breaks, labels = new_y_labels, expand = c(0,0)) +
+    xlab("") +
+    ylab("Percentage of clone type") +
+    ggtitle(patient) +
+    # set the colors manually: 
+    scale_fill_manual(values = color_map, 
+                      name = legend_title,
+                      breaks = levels(alv$cloneOri)) + 
+    scale_alpha_manual(values = alpha_map, name = legend_title, guide = "none") + 
+    # theme: 
+    theme(legend.position = "right", # none
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_text(size = 14, face = "bold"),
+          axis.text.y = element_text(hjust = 0.7),
+          axis.title.y = element_text(size = 16, face = "bold"),
+          plot.title = element_text(size = 18, colour = "blue", face = "bold", hjust = 0.5),
+          panel.background = element_blank(),
+          panel.grid.major.y = element_line(colour = "black", size = 0.5, linetype = "dotted"),
+          panel.grid.minor = element_blank()
+         )
+  return(plt)
+  # pdf(paste0(patient, ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+  # print(plt)
+  # dev.off()
+}
+
+# Plot & save alluvia for each patient separately:
+alv.14MH <- plotAlv(alv1, patient1) 
+alv.14MH
+pdf(paste0("14MH", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.14MH)
+dev.off()
+
+#
+alv.13P4 <- plotAlv(alv2, patient2)
+alv.13P4
+pdf(paste0("13P4", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.13P4)
+dev.off()
+
+
+#
+alv7a.13LN <- plotAlv(alv7a, patient7) +
+  ggtitle("13LN.ATATIL")
+alv7a.13LN
+pdf(paste0("13LN.ATATIL", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv7a.13LN)
+dev.off()
+
+
+#
+alv.1EDA <- plotAlv(alv4, patient4) +
+  scale_x_discrete(labels = c("B0", "T0.0F", "T0.0I", "ACTP", "B30", "T30"))
+alv.1EDA
+pdf(paste0("1EDA", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.1EDA)
+dev.off()
+
+
+#
+alv.1HU3 <- plotAlv(alv5, patient5) +
+  scale_x_discrete(labels = c("B0", "T0.0J", "T0.04", "ACTP", "B30", "T30"))
+alv.1HU3
+pdf(paste0("1HU3", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.1HU3)
+dev.off()
+#
+
+# 
+alv.1IJX <- plotAlv(alv3, patient3) +
+  scale_x_discrete(labels = c("B0", "T0", "ACTP", "B30", "T30.6T", "T30.6X"))
+alv.1IJX
+pdf(paste0("1IJX", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.1IJX)
+dev.off()
+
+# 
+alv.1FUI <- plotAlv(alv9, patient9) +
+  scale_x_discrete(labels = c("B0", "T0", "ACTP", "B30", "T30.CQ", "T30.CU"))
+alv.1FUI
+pdf(paste0("1FUI", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.1FUI)
+dev.off()
+
+# 
+alv7b.13LN <- plotAlv(alv7b, patient7) + 
+  ggtitle("13LN.NeoTIL") +
+  scale_x_discrete(labels = c("B0", "T0", "ACTP", "B30", "T30.LO", "T30.M9"))
+alv7b.13LN
+pdf(paste0("13LN.NeoTIL", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv7b.13LN)
+dev.off()
+
+#
+alv.0ZMN <- plotAlv(alv6, patient6) +
+  scale_x_discrete(labels = c("B0", "T0.1F", "T0.1I", "ACTP", "B30", "T30.9C", "T30.9G"))
+alv.0ZMN
+pdf(paste0("0ZMN", ".bulkTCR_alluvial.plot_clonetypes.from.5timepoints_20220718.pdf"), width = 11, height = 6.5)
+print(alv.0ZMN)
+dev.off()
+
+
+# alv.13LN <- plotAlv(alv7, patient7) + 
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()
+#        )
+# alv.13LN # need to add ATATIL & NeoTIL to x-axis sample names
+
+
+# 
+# alv.1I3M <- plotAlv(alv8, patient8) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank(),
+#         axis.text.x = element_text(hjust = 0.7)
+#        )
+# alv.1I3M
+
+# dev.off()
+# 
+# pdf("1IKA_clone_origins_20220406.pdf", width = 3.5, height = 5)
+# alv.1IKA <- plotAlv(alv10, patient10) + 
+#   ylab("Percentage of clone origin") +
+#   theme(axis.text.y = element_text(size = 14),
+#         axis.title.y = element_text(size = 16, face = "bold")
+#        )
+# alv.1IKA
+# dev.off()
+
+
+# Get common legend for all patients:
+# legend <- get_legend(alv.1EDA +
+#                      guides(fill = guide_legend(title.position = "top", ncol = 4, reverse = FALSE)) + # number of legend columns
+#                      theme(legend.position = "bottom",
+#                            legend.title = element_text(size = 16),
+#                            legend.text = element_text(size = 14)
+#                           )
+#                     )
+
+```
+
+
+```{r plot all alluvia, fig.width=12, fig.height=13}
+
+# pdf("All.patients_bulkTCR_dynamics.frequency_of_clone.origins_in_B0.ACTP.T0_oldSchemeB1_20220401.pdf",
+#     width = 12, height = 17)
+# fig <- plot_grid(alv.14MH, alv.13LN, alv.13P4, alv.1EDA, alv.1HU3, alv.0ZMN, alv.1IJX, alv.1I3M,
+#                  align = c("vh"), ncol = 3)
+# #fig
+# fig_legend <- plot_grid(fig, legend, 
+#                         nrow = 2, rel_heights = c(8,1))
+# #fig_legend
+# annotate_figure(fig_legend, 
+#                 top = text_grob("
+#                 bulkTCR - dynamics & frequency of clone origins in B0, ACTP, T0
+#                                 ", 
+#                                 color = "black", face = "bold", size = 24),
+#                 bottom = text_grob("present: clones with > 1 read      absent: clones with =< 1 read
+#                                    ",
+#                                    color = "black", face = "bold", size = 16)
+#                 )
+# dev.off()
+
+```

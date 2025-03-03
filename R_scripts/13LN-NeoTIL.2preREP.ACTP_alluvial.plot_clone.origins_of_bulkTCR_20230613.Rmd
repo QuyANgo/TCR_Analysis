@@ -1,0 +1,356 @@
+---
+title: "13LN-NeoTIL.2preREP.ACTP - alluvial plot for clone origin of bulkTCR - reorder.oldSchemeB - 20230613"
+author: "Quy Ai Ngo"
+date: "13-Jun-2023"
+output: slides_presentation
+---
+
+```{r setup, echo = FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+setwd("/home/localadmin/Desktop/RESEARCH/MArnaud/bulk_TCR/Clone_origin/20230613_NeoTIL.13LN/")
+```
+
+## 1. Load libraries
+```{r setup}
+
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(ggalluvial)
+library(randomcoloR)
+library(ggforce)
+library(scales)
+library(grid)
+library(ggpubr)
+library(cowplot)
+#library(kableExtra)
+
+```
+
+
+```{r patient & sample info}
+
+mainDir <- "/home/localadmin/Desktop/RESEARCH/MArnaud/bulk_TCR/"
+
+#patients <- c("14MH", "13LN", "13P4", "1IJX", "1EDA", "1HU3", "0ZMN", "1I3M", "1FUI")
+
+patient7c <- "13LN-NeoTIL"
+
+sample.3F <- c("preREP1", "ACTP", "preREP2") # for patient1,7,2,3,9
+
+
+```
+
+
+# 1. Load data
+```{r data import & cleaning}
+
+# Get a list of all files named per patient by sample key words:
+getFiles <- function(patient) {
+  filenames <- c()
+  for (f in  c("preREP TGe0001b", "ACTP", "preREP TGe0002b")) {
+    spl <- list.files(paste0(mainDir, "13LN", "/TCR_repertoire/NeoTIL/"), 
+                      pattern = f, full.names=TRUE)
+    filenames <- c(filenames, spl)
+  }
+  print(filenames)
+  listDF <- lapply(filenames, data.table::fread)
+  listDF <- lapply(listDF, subset, Frame == "IN" & Count > 1)
+  return(listDF)
+}
+
+listDF7c <- getFiles(patient7c)
+names(listDF7c) <- sample.3F
+
+```
+
+
+# 2. Clean up & prepare data for alluvia
+```{r prepare list of df for ggalluvial}
+
+# 1. add "Clonotype" column to each df of the list.DF by combining TRBV, CDR3_aaseq and TRBJ
+# 2. add "Status" column ("present" & "absent") to each df, according to the read counts
+# 3. add "Freq" column to each df for clone Frequency in each sample
+# 4. select 4 columns Clonotype, Count, Freq, Status
+# 5. Reorder list.DF & rename files in list
+
+prep_df_alv <- function(spl, ...){
+  spl <- spl %>%
+    unite("Clonotype", c(TRBV, CDR3_aaseq, TRBJ), remove = F) %>% #1
+    mutate(Status = ifelse(Count > 1, "P", "A")) %>% #2
+    mutate(Freq = 100*(round(Count / sum(Count), 10))) %>% #3, round up decimal to 10 digits
+    select(Clonotype, Count, Freq, Status) #4
+}
+
+listDF7c <- lapply(listDF7c, prep_df_alv)
+
+```
+
+
+```{r create sample suffixes for joined df of patient with even-number of samples}
+# sfx.4F <- c("_B0", "_ACTP", "_T0.1F", "_T0.1I")
+# sfx.4Fb <- c("_B0", "_ACTP", "_T0.0J", "_T0.04")
+# sfx.4Fc <- c("_B0", "_ACTP", "_T0.1F", "_T0.1X")
+```
+
+
+```{r join all df in the list.DF into 1 big df of TCR repertoire with 2 statuses, clone Frequency}
+
+# 6. avoid automatic dplyr column renaming when joining all df
+# 7. convert Status: NA into "A"
+# 8. convert Freq: NA into artificial 0
+# 9. select relevant columns
+# 10. add Status combinations for each clone
+
+# Join samples with odd sample number (==3):
+joinDF.3F <- function(listDF) {
+  res <- listDF %>% 
+    purrr::reduce(full_join, by = "Clonotype", suffix = c("_preREP1", "_ACTP")) %>% 
+    data.table::setnames(old = c("Count", "Freq", "Status"), new = c("Count_preREP2", "Freq_preREP2", "Status_preREP2"))
+  return(res)
+}
+res7c <- joinDF.3F(listDF7c)
+
+```
+
+
+```{r add dummy frequency & clone status}
+
+# Add dummy frequency for all patients:
+addFreqStatus <- function(res) {
+  res <- res %>%
+  mutate(across(starts_with("Status"), ~ifelse(is.na(.x),"A",.x))) %>% #7
+  mutate(across(starts_with("Freq"), 
+                ~ifelse(is.na(.x), (round(0/100,10)), .x))) %>% #8 dummy values used for calculation of 0-read clones
+  select(Clonotype, starts_with("Freq"), starts_with("Status")) #9
+}
+res7c <- addFreqStatus(res7c)
+
+# Add cloneID as clone status combination - 3 samples:
+addCloneID.3F <- function(res) {
+  res <- mutate(res, cloneID = paste(res$Status_preREP1, res$Status_ACTP, res$Status_preREP2, sep="_")) #10
+}
+res7c <- addCloneID.3F(res7c)
+
+```
+
+
+```{r prepare alv format}
+
+# Summarize 3 samples:
+summarise.3F <- function(res) {
+  res <- res %>% 
+  #filter(cloneID != "A_A_A_A_A_A") %>%
+  group_by(cloneID) %>%
+  summarise(Freq_preREP1 = sum(Freq_preREP1),
+            Freq_ACTP = sum(Freq_ACTP),
+            Freq_preREP2 = sum(Freq_preREP2)
+           ) %>% 
+  arrange(cloneID)
+  names(res) <- sub("Freq_*", "", names(res))
+  return(res)
+}
+res7c <- summarise.3F(res7c)
+
+```
+
+
+
+```{r transform alv to long format}
+
+# Convert res to long alv format:
+toAlv <- function(res) {
+  alv <- res %>%
+    gather(key = Sample, value = Freq, 
+           2:length(res), 
+           factor_key = TRUE) %>% 
+  mutate(Status = ifelse(Freq > 0, "Expanded", "ND"))
+  is_alluvia_form(alv, 2:length(alv))
+  return(alv)
+}
+alv7c <- toAlv(res7c)
+
+# Sanity check for max freq per sample:
+alv7c %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+```
+
+
+```{r finish alv df}
+
+## cloneOri defined below is the same for all patients
+## cloneID groups defined below are the same for 3-samples & 4-samples patient groups, respectively
+
+# cloneOri <- c("clones in blood & tumor", "clones in blood only", "clones in tumor only", 
+#               "products from blood & tumor", "products from blood only", "products from tumor only", "products from unknown source"
+#              ) #alluvium color categories / Quy's order, newSchemeA/B
+
+cloneOri <- c("products from both preREPs", "products from preREP1 only", "products from preREP2 only", 
+              "products from unknown source",
+              "clones in both preREPs", "clones in preREP1 only", "clones in preREP2 only") #alluvium color categories / Rémy's order, oldScheme
+
+# Add clone origin - 3 samples:
+cloneID.3F <- rev(c("P_P_P", "P_P_A", "A_P_P", "A_P_A",
+                    "P_A_P", "P_A_A", "A_A_P")) #alluvium
+addCloneOri.3F <- function(alv) {
+  alv <- alv %>% 
+    mutate(cloneOri = ifelse(cloneID == "P_P_P", "products from both preREPs",
+                      ifelse(cloneID == "P_P_A", "products from preREP1 only",
+                      ifelse(cloneID == "A_P_P", "products from preREP2 only",
+                      ifelse(cloneID == "A_P_A", "products from unknown source",
+                      ifelse(cloneID == "P_A_P", "clones in both preREPs",
+                      ifelse(cloneID == "P_A_A", "clones in preREP1 only",
+                      #ifelse(cloneID == "A_A_P", 
+                      "clones in preREP2 only"
+                      )))))))
+  alv$cloneID <- factor(alv$cloneID, levels = cloneID.3F) #alluvium
+  return(alv)
+}
+alv7c <- addCloneOri.3F(alv7c)
+
+# Factorize Sample for all patients:
+alv7c$Sample <- factor(alv7c$Sample, levels = sample.3F)
+
+# Factorize other variables for all patients:
+factorizeOthers <- function(alv) {
+  alv$Status <- factor(alv$Status, levels = c("Expanded", "ND")) #stratum
+  alv$stratum_text <- as.character(alv$Status) #stratum_text
+  alv$cloneOri <- factor(alv$cloneOri, levels = cloneOri) #alluvium color categories
+  return(alv)
+}
+alv7c <- factorizeOthers(alv7c)
+
+# Save alv df of all patients:
+saveAlv <- function(alv, patient) {
+  write.table(alv, paste0(patient, ".2preREPS.ACTP.bulkTCR_frequency.status_of_clone.origins_for_alluvial.plot_20230613.txt"),
+            sep = "\t", append = F, quote = F, row.names = F, col.names = T)
+}
+saveAlv(alv7c, patient7c)
+
+```
+
+
+# 3. Plot
+```{r prepare artificial scale for "absent" stratum}
+
+#fraction_missing1 <- 15 # Quy's 1read.Scheme
+fraction_missing <- 30 #  oldScheme & newSchemeA/B
+
+# addAbsentFreq <- function(sample.Name, alv) {
+#   for (spl in sample.Name){
+#   mask_missing <- (alv$Sample == spl) & (alv$Status == "absent")
+#   print(sum(mask_missing))
+#   alv[mask_missing, ]$Freq <- fraction_missing/sum(mask_missing)
+#   }
+# }
+# mapply(addAbsentFreq, 
+#        list(sample.3F, sample.3F, sample.3F, sample.4F, sample.4Fb, sample.4F), 
+#        list(alv1, alv2, alv3, alv4, alv5, alv6)) NOT changing freq for absent cases!!!
+
+
+for (spl in sample.3F){
+  mask_missing <- (alv7c$Sample == spl) & (alv7c$Status == "ND")
+  print(sum(mask_missing))
+  alv7c[mask_missing, ]$Freq <- fraction_missing/sum(mask_missing)
+}
+
+# Sanity check for total frequency, including absent frequency, per sample:
+alv7c %>% group_by(Sample) %>% summarise(freq = sum(Freq))
+
+# Get new y axis breaks and labels for true scale of "present" stratum :
+new_y_breaks <- seq(from = fraction_missing, to = (100 + fraction_missing), by = 20)
+new_y_labels <- seq(from = 0, to = 100, by = 20)
+
+```
+
+
+```{r set axis labels, legend title & breaks}
+box_width <- 1/10
+legend_title <- "clone origin"
+#legend_breaks <- levels(alv$cloneID)
+```
+
+
+
+```{r generate distinct colors for each alluvium and stratum}
+
+# color_map_alv <- rev(c("#56B4E9", "#D55E00", "#F0E442", "#009E73", "grey80", "grey85", "grey90")) #color-blinded friendly, similar to "cornflowerblue", "red", "yellow", "seagreen", for "B+T", "B", "T", "unknown"
+
+#color_map_alv <- c("grey80", "grey85", "grey90", "#56B4E9", "#D55E00", "#F0E442", "#009E73") #color-blinded friendly, similar to "cornflowerblue", "red", "yellow", "seagreen" / for "B+T", "B", "T", "unknown" / Quy's color, new schemeA !!!
+
+#color_map_alv <- c("grey80", "grey85", "grey90", "#0568B3", "#0EAD7F", "#FDA813", "#FFF910") #color-blinded friendly, similar to "cornflowerblue", "seagreen", "orange", "yellow" / for "B+T", "B", "T", "unknown" / Quy's color, new schemeB !!!
+
+color_map_alv <- c("#A856E9", "#0EAD7F", "#FDA813", "#FFF910", "grey80", "grey85", "grey90") #color-blinded friendly, similar to "violet", "seagreen", "orange", "yellow" / for "B+T", "B", "T", "unknown" / Rémy+Quy's color, oldSchemeB1 !!! BEST COLOR SCHEME !!!!!!!!!
+
+#color_map_alv <- c("#0568B3", "#0EAD7F", "#FDA813", "#FFF910", "grey80", "grey85", "grey90") #color-blinded friendly, similar to "violet", "seagreen", "orange", "yellow" / for "B+T", "B", "T", "unknown" / Rémy's color, oldSchemeC1 !!!
+
+names(color_map_alv) <- cloneOri # --> change for Rémy color scheme !!!
+
+color_map_stratum <- c("snow3", "snow4")
+names(color_map_stratum) <- c("Expanded", "ND")
+
+color_map <- c(color_map_alv, color_map_stratum) # --> change for Rémy color scheme !!!
+
+alpha_map <- replicate(0.7, n = length(color_map))
+names(alpha_map) <- names(color_map)
+alpha_map[["ND"]] <- 1
+alpha_map[["Expanded"]] <- 1
+
+```
+
+
+
+```{r alluvial plot - artificial absence scale, fig.width=5.5, fig.height=5}
+
+legend_labels = c("products from both preREPs", "products from preREP1 only", "products from preREP2 only", "products from unknown source", "", "", "") # Remy's oldScheme
+
+plotAlv <- function(alv, patient) {
+  plt <- ggplot(alv,
+                aes(x = Sample, y = Freq, 
+                    stratum = Status, alluvium = cloneID)) +
+  # set the geom flow and stratum
+    geom_flow(aes(fill = cloneOri, alpha = cloneOri), # --> change for Rémy color scheme !!!
+              na.rm = F, 
+              #colour = "white", # --> include for Rémy oldScheme2 !!!
+              aes.bind = "flows", width = 1/8) +
+    geom_stratum(aes(fill = Status), 
+                 na.rm = F, width = 1/8) +
+  # set the text:
+    geom_text(aes(label = stratum_text), stat = "stratum", size = 3.5, angle = 90) +
+  # set the x and y axis
+    scale_x_discrete(limits = levels(alv$Sample), expand = c(0,0, 0,0.3), 
+                     labels = c("NeoTIL\npreREP1", "ACTP", "NeoTIL\npreREP2")) +
+    scale_y_continuous(breaks = new_y_breaks, expand = c(1E-3, 1E-3),
+                       labels = new_y_labels) +
+    xlab("") +
+    ylab("Repertoire fraction [%]") +
+    ggtitle(patient) +
+    # set the colors manually: 
+    scale_fill_manual(values = color_map, 
+                      name = legend_title,
+                      labels = legend_labels, # include if labeling only products in legend, like Remy's oldScheme
+                      breaks = levels(alv$cloneOri)) + 
+    scale_alpha_manual(values = alpha_map, name = legend_title, guide = "none") + 
+    # theme: 
+    theme(legend.position = "bottom", # none
+          axis.text.x = element_text(size = 14, face = "bold"),
+          plot.title = element_text(size = 18, colour = "blue", face = "bold", hjust = 0.5),
+          panel.background = element_blank(),
+          panel.grid.major.y = element_line(colour = "black", linewidth = 0.5, linetype = "dotted"),
+          panel.grid.minor = element_blank()
+         )
+  return(plt)
+}
+
+# Plot & save alluvia for each patient separately:
+pdf(paste0(patient7c, ".2preREPS.ACTP_clone_origins_20230613.pdf"), width = 5.5, height = 5)
+alv.13LN <- plotAlv(alv7c, patient7c) + 
+  #ylab("Percentage of clone origin") +
+  theme(axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16, face = "bold")
+       )
+alv.13LN # need to add ATATIL & NeoTIL to x-axis sample names
+dev.off()
+
+```
+
