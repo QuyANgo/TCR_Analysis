@@ -1,0 +1,255 @@
+---
+title: "14MH - scTCR & scGEX - alluvial & violin plots"
+author: "Quy Ai Ngo"
+date: "10-Mar-2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# 14MH scTCR
+
+## 1. Load libraries
+```{r load libraries}
+
+#setwd("C:/Users/qu4247/Documents/RESEARCH/MArnaud/sc_TCR/14MH/20220310")
+
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(ggalluvial)
+library(ggforce)
+library(randomcoloR)
+library(scales)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(kableExtra)
+
+```
+
+
+```{r read in object created by David Barras, echo=TRUE, include=TRUE}
+
+TCR_14MH <- readRDS("../TCR_14MH.rds")
+names(TCR_14MH)
+TCR <- TCR_14MH$TCR_b_comp %>% 
+  select(!contains(c("BM41", "counts"))) # discard unwanted samples
+
+GEX_14MH <- readRDS("../14MH_seurat_processed.rds")
+names(GEX_14MH)
+
+```
+
+
+```{r set sample names}
+
+nameDF = c("T0.sc", "ACTP.sc", "T14.sc", "T30.sc")
+
+```
+
+
+
+```{r format df for alluvial plot}
+
+names(TCR) <- sub("_sc", ".sc", names(TCR))
+names(TCR) <- sub("is_in*", "status", names(TCR))
+names(TCR) <- sub("Perc_in_*", "", names(TCR))
+
+TCR <- TCR %>% mutate_at(vars(starts_with("status")), 
+                         ~ replace(., which(. == "yes"), "P")) %>% 
+  mutate_at(vars(starts_with("status")), 
+                         ~ replace(., which(. == "no"), "A")) %>% 
+  select(unique_id, status_T0.sc, status_ACTP.sc, status_T14.sc, status_T30.sc, nameDF) %>% 
+  mutate(alluvium = paste(status_T0.sc,
+                          status_ACTP.sc,
+                          status_T14.sc,
+                          status_T30.sc,
+                          sep = "_"))
+
+head(TCR)
+
+write.table(TCR, "./14MH_scTCR_4samples_MA.txt",
+            sep = "\t", append = F, quote = F,
+            row.names = F, col.names = T)
+
+```
+
+
+```{r prepare alluvial df}
+
+# empty alluvial df
+alluvial_data_empty <- expand.grid(list(
+  T0.sc = c("P", "A"),
+  ACTP.sc = c("P", "A"),
+  T14.sc = c("P", "A"),
+  T30.sc = c("P", "A")
+))
+alluvial_data_empty$alluvium <- paste(
+  alluvial_data_empty$T0.sc,
+  alluvial_data_empty$ACTP.sc,
+  alluvial_data_empty$T14.sc,
+  alluvial_data_empty$T30.sc,
+  sep="_")
+alluvial_data_empty <- alluvial_data_empty %>% filter(alluvium != "A_A_A_A")
+
+```
+
+
+```{r prepare alluvial df, cont.}
+
+# alluvial df
+alluvial_data_pa_wide <- TCR %>% 
+  group_by(alluvium, status_T0.sc, status_ACTP.sc,
+           status_T14.sc, status_T30.sc) %>%
+  summarise(freq_T0.sc = sum(T0.sc),
+            freq_ACTP.sc = sum(ACTP.sc),
+            freq_T14.sc = sum(T14.sc),
+            freq_T30.sc = sum(T30.sc)) %>% 
+  filter(alluvium != "A_A_A_A")
+alluvial_data_pa_wide <- data.frame(alluvial_data_pa_wide)
+
+common_columns <- c("alluvium", "status_T0.sc",
+                    "status_ACTP.sc", "status_T14.sc", 
+                    "status_T30.sc")
+
+alluvial_data <- data.frame()
+for (col_ in nameDF){
+  alluvial_data_wide_tmp <- alluvial_data_pa_wide[, c(common_columns, paste0("freq_", col_))]
+  colnames(alluvial_data_wide_tmp)[dim(alluvial_data_wide_tmp)[2]] <- "freq"
+  alluvial_data_wide_tmp$axis <- col_
+  alluvial_data_wide_tmp$stratum <- alluvial_data_wide_tmp[[paste0("status_", col_)]]
+  
+  alluvial_data <- rbind(alluvial_data, alluvial_data_wide_tmp)
+}
+
+alluvial_data$stratum <- factor(alluvial_data$stratum, levels = c("P", "A"))
+
+alluvial_data$axis <- factor(alluvial_data$axis, levels = nameDF)
+
+alluvial_data$alluvium <- factor(alluvial_data$alluvium, levels = alluvial_data_empty$alluvium)
+
+alluvial_data$stratum_text <- as.character(alluvial_data$stratum)
+
+```
+
+
+
+```{r set axis labels, legend title & breaks}
+
+box_width <- 1/10
+legend_title <- "Cell clone status"
+legend_breaks <- levels(alluvial_data$alluvium)
+x_labels <- nameDF
+
+```
+
+
+```{r prepare artificial scale for "Absent" stratum}
+
+alluvial_data_var <- alluvial_data
+
+# Change the frequency for missing values: 
+alluvial_data_var$A <- F
+for (cat in x_labels){
+  mask_absent <- (alluvial_data_var$axis == cat) & (alluvial_data_var$stratum == "A")
+  alluvial_data_var[mask_absent, ]$A <- T
+}
+
+fraction_missing <- 50
+for (cat in x_labels){
+  mask_missing <- (alluvial_data_var$axis == cat) & (alluvial_data_var$A == "TRUE")
+  print(sum(mask_missing))
+  alluvial_data_var[mask_missing, ]$freq <- fraction_missing/sum(mask_missing)
+}
+
+# Get y axis breaks and labels:
+new_y_breaks <- seq(from = fraction_missing, to = (100 +fraction_missing), by = 25)
+new_y_labels <- seq(from = 0, to = 100, by = 25)
+
+#legend_breaks <- levels(alluvial_data_var$alluvium)
+
+```
+
+
+
+```{r generate distinct colors for each alluvium and stratum}
+
+alluvial_categories <- 
+  c(as.character(alluvial_data_pa_wide$alluvium))
+color_map_alluvial <- distinctColorPalette(length(alluvial_categories))
+names(color_map_alluvial) <- alluvial_categories
+
+alluvial_data$alluvium <- factor(alluvial_data$alluvium, levels = alluvial_categories)
+
+color_map_stratum <- c("grey80", "grey70")
+names(color_map_stratum) <- c("P", "A")
+
+colour_map <- c(color_map_alluvial, color_map_stratum)
+
+cat(capture.output(print(colour_map), 
+                   file="./colour.map_artificial.scales_random.colors_scTCR_4samples.txt")) # save colour map
+
+alpha_map <- replicate(0.7, n = length(colour_map))
+names(alpha_map) <- names(colour_map)
+alpha_map[["A"]] <- 1
+alpha_map[["P"]] <- 1
+
+```
+
+
+```{r alluvial plot}
+
+# Alluvial plot - random colors
+
+pdf("./14MH_alluvial.plot_artificial.scale_random.colors_scTCR_4samples_MA.pdf", width = 11, height = 8)
+ggplot(alluvial_data_var,
+            aes(x = axis, y = freq, 
+                stratum = stratum, alluvium = alluvium)) +
+  # set the geom flow and stratum
+  geom_flow(aes(fill=alluvium, alpha=alluvium), 
+            na.rm = F, aes.bind = "flows", width = 1/8, colour="white") +
+  geom_stratum(aes(fill=stratum), 
+               na.rm = F, width = 1/8, colour = "grey15") +
+  # set the text:
+  geom_text(aes(label = stratum_text), stat = "stratum", size = 4, angle = 90) +
+  # set the x and y axis
+  scale_x_discrete(limits = x_labels, expand = c(.0, .0)) + 
+  scale_y_continuous(breaks = new_y_breaks, 
+                     labels = new_y_labels, 
+                     expand = c(1E-3, 1E-3)) +
+  xlab("Sample") +
+  ylab("Fraction of Cell Clone Status") +
+  # set the colors manualy: 
+  scale_fill_manual(values = colour_map, 
+                    name = legend_title,
+                    #labels = legend_labels,
+                    breaks = legend_breaks) + 
+  scale_alpha_manual(values = alpha_map, name = legend_title, guide = "none") + 
+  guides(fill=guide_legend(ncol=3)) + # number of legend columns
+  # theme: 
+  theme(legend.position = "bottom", # none
+        plot.title = element_text(hjust = 0.5, size=14), 
+        axis.text.y = element_text(size=10), 
+        axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size=12),
+        legend.text = element_text(size=12)
+  ) +
+  theme(
+    strip.background = element_rect(color="white", fill="white", size=1),
+    strip.text.x = element_text(size = 24),
+  ) +
+  ggtitle("14MH evolution of cell clone status")
+
+dev.off()
+
+```
